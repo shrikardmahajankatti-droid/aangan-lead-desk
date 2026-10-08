@@ -3,44 +3,44 @@ import { z } from "zod";
 
 // Env is validated per integration, lazily, so the dashboard can boot (and
 // dry-run) before every key exists. Each getter throws a clear message naming
-// the missing variables.
+// the missing variables. Defaults live here, not in .env.example.
 
-const bool = z
-  .string()
-  .optional()
-  .transform((v) => (v ?? "true").toLowerCase() !== "false");
+const bool = (fallback: boolean) =>
+  z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined ? fallback : v.toLowerCase() !== "false"));
 const num = (fallback: number) =>
   z
     .string()
     .optional()
-    .transform((v) => (v === undefined || v === "" ? fallback : Number(v)))
+    .transform((v) => (v === undefined ? fallback : Number(v)))
     .pipe(z.number().finite());
 const req = z.string().min(1);
 
 const schemas = {
   app: z.object({
     APP_BASE_URL: z.string().url().default("http://localhost:3000"),
-    DRY_RUN: bool,
+    // Anything other than the literal "false" keeps dry-run on.
+    DRY_RUN: bool(true),
   }),
-  supabase: z.object({
-    SUPABASE_URL: z.string().url(),
-    SUPABASE_SERVICE_ROLE_KEY: req,
+  db: z.object({
+    DATABASE_URL: req,
   }),
   gemini: z.object({
     GEMINI_API_KEY: req,
     GEMINI_MODEL: z.string().default("gemini-3.8-flash"),
-    GEMINI_INPUT_COST_PER_1M: num(0),
-    GEMINI_OUTPUT_COST_PER_1M: num(0),
   }),
   vaani: z.object({
     VAANI_API_KEY: z.string().optional(),
     VAANI_WEBHOOK_SECRET: req,
+    VAANI_PHONE_NUMBER: z.string().optional(),
   }),
+  // Rates for the cost tile. Gemini rates are entered in ₹ per 1M tokens.
   costs: z.object({
     VAANI_COST_PER_MIN: num(0),
     GEMINI_INPUT_COST_PER_1M: num(0),
     GEMINI_OUTPUT_COST_PER_1M: num(0),
-    USD_TO_INR: num(88),
   }),
   google: z.object({
     GOOGLE_CLIENT_ID: req,
@@ -62,23 +62,22 @@ const schemas = {
   }),
   hubspot: z.object({
     HUBSPOT_ACCESS_TOKEN: req,
-    HUBSPOT_PIPELINE_ID: z.string().default("default"),
-    HUBSPOT_STAGE_BOOKED: req,
-    HUBSPOT_STAGE_NEW: req,
   }),
 } as const;
 
 type Schemas = typeof schemas;
-const cache = new Map<keyof Schemas, unknown>();
+export type EnvGroup = keyof Schemas;
+const cache = new Map<EnvGroup, unknown>();
 
-export function env<K extends keyof Schemas>(group: K): z.infer<Schemas[K]> {
+export function env<K extends EnvGroup>(group: K): z.infer<Schemas[K]> {
   if (cache.has(group)) return cache.get(group) as z.infer<Schemas[K]>;
+  // Treat empty strings as unset so defaults apply.
   const raw = Object.fromEntries(
     Object.entries(process.env).map(([k, v]) => [k, v === "" ? undefined : v]),
   );
   const parsed = schemas[group].safeParse(raw);
   if (!parsed.success) {
-    const vars = parsed.error.issues.map((i) => i.path.join(".")).join(", ");
+    const vars = [...new Set(parsed.error.issues.map((i) => i.path.join(".")))].join(", ");
     throw new Error(`Missing or invalid env for ${group}: ${vars}`);
   }
   cache.set(group, parsed.data);
