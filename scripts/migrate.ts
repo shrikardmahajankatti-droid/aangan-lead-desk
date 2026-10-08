@@ -1,6 +1,7 @@
 // Applies db/migrations/*.sql in order, once each, over the direct (unpooled) connection.
+// Plain Postgres over TCP (node-postgres), as Neon recommends for migrations.
 // Usage: npm run db:migrate
-import { Pool } from "@neondatabase/serverless";
+import pg from "pg";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
@@ -12,8 +13,17 @@ if (!url) {
 
 const dir = path.join(process.cwd(), "db", "migrations");
 const files = readdirSync(dir).filter((f) => f.endsWith(".sql")).sort();
-const pool = new Pool({ connectionString: url });
-const client = await pool.connect();
+let client = new pg.Client({ connectionString: url });
+try {
+  await client.connect();
+} catch (e) {
+  // Direct host unreachable (e.g. DNS): the pooler also runs DDL inside a transaction fine.
+  const pooled = process.env.DATABASE_URL;
+  if (!pooled || pooled === url) throw e;
+  console.warn(`Direct connection failed (${(e as Error).message}); using the pooled URL.`);
+  client = new pg.Client({ connectionString: pooled });
+  await client.connect();
+}
 
 try {
   await client.query(`create table if not exists schema_migrations (
@@ -39,6 +49,5 @@ try {
     }
   }
 } finally {
-  client.release();
-  await pool.end();
+  await client.end();
 }

@@ -66,6 +66,8 @@ async function generateJsonOnce<S extends z.ZodType>(opts: {
   transientRetries?: number;
   /** Longest single backoff to accept; live mid-call checks pass a small value. */
   maxWaitMs?: number;
+  /** Retries after a response fails validation (default 1). */
+  validationRetries?: number;
 }): Promise<JsonResult<z.infer<S>>> {
   const model = opts.model ?? env("gemini").GEMINI_MODEL;
   const responseJsonSchema = toResponseSchema(opts.schema);
@@ -75,7 +77,7 @@ async function generateJsonOnce<S extends z.ZodType>(opts: {
   let transientFailures = 0;
   let lastError: unknown;
 
-  while (validationFailures < 2) {
+  while (validationFailures <= (opts.validationRetries ?? 1)) {
     attempts++;
     try {
       const res = await ai().models.generateContent({

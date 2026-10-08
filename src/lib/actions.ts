@@ -19,7 +19,7 @@ export type OnceResult<T> =
  * Dry run: records the payload that would have been sent (once per key) and calls nothing.
  */
 export async function runOnce<T>(
-  a: { callId: string; type: ActionType; key: string; dryRun: boolean; payload: unknown },
+  a: { callId: string | null; type: ActionType; key: string; dryRun: boolean; payload: unknown },
   fn: (attemptKey: string) => Promise<{ external_id: string | null; result: T }>,
 ): Promise<OnceResult<T>> {
   const payload = JSON.stringify(a.payload);
