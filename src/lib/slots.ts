@@ -4,6 +4,8 @@ export type Busy = { start: string; end: string };
 export type Slot = { id: string; start: string; end: string; speech: string };
 
 const IST_OFFSET_MIN = 330;
+/** Consultations are booked Monday–Friday only (confirmed by the studio). */
+const BOOKING_DAYS = new Set([1, 2, 3, 4, 5]);
 
 /** Wall-clock IST parts for an instant. */
 function istParts(d: Date) {
@@ -40,7 +42,7 @@ export function speakSlot(start: Date, now: Date): string {
 const overlaps = (s: number, e: number, busy: { s: number; e: number }[]) => busy.some((b) => s < b.e && e > b.s);
 
 /**
- * Up to `count` free slots in the next `days` days within business hours (IST),
+ * Up to `count` free slots in the next `days` days, Monday–Friday within business hours (IST),
  * at most one per day so the caller gets real choices, earliest first.
  * Slots start on the hour and need `leadMin` notice.
  */
@@ -60,6 +62,7 @@ export function findSlots(o: {
   const out: Slot[] = [];
 
   for (let d = 0; d < (o.days ?? 7) && out.length < (o.count ?? 3); d++) {
+    if (!BOOKING_DAYS.has(istParts(istInstant(today.y, today.m, today.day + d, 12 * 60)).dow)) continue;
     for (let m = open; m + o.durationMin <= close; m += 60) {
       const start = istInstant(today.y, today.m, today.day + d, m);
       const end = new Date(start.getTime() + o.durationMin * 60_000);
@@ -83,6 +86,7 @@ export function slotStillFree(slotStart: string, durationMin: number, hours: str
   if (Number.isNaN(start.getTime()) || start.getTime() < now.getTime()) return false;
   const { open, close } = parseHours(hours);
   const p = istParts(start);
+  if (!BOOKING_DAYS.has(p.dow)) return false;
   if (p.min < open || p.min + durationMin > close) return false;
   return !overlaps(start.getTime(), start.getTime() + durationMin * 60_000, busy.map((b) => ({ s: Date.parse(b.start), e: Date.parse(b.end) })));
 }

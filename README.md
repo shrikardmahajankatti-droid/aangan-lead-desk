@@ -99,7 +99,7 @@ A service account can't invite attendees without Workspace domain-wide delegatio
 5. Set `GOOGLE_CALENDAR_ID` (the consultations calendar, or `primary`). `npm run calendar:check` lists the next 3 slots.
 
 Booking uses:
-- `freebusy.query` for 3 slots over the next 7 days within `CONSULT_HOURS` (one per day, 2 h notice)
+- `freebusy.query` for 3 slots over the next 7 days, **Monday–Friday only**, within `CONSULT_HOURS` (one per day, 2 h notice)
 - a re-check before booking
 - `events.insert` with the designer and caller as attendees and `sendUpdates=all`
 
@@ -184,5 +184,4 @@ The pipeline is channel-agnostic once a source is mapped to a `CallRecord` (`src
 - **Vaani:** the payload shapes and tool-call format are unconfirmed (see above).
   - Webhooks are queued and delivered about once a minute.
   - Caller numbers arrive **masked**, which weakens HubSpot's match-by-phone and the 10-minute dropped-call merge. The merge relies on the number.
-- **Booking days:** consultations are offered on every day within `CONSULT_HOURS`, including weekends. Restrict them if the studio is closed some days.
 - **Secrets:** rotate any key that was shared in chat during setup.
