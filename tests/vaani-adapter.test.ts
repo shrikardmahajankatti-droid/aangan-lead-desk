@@ -1,53 +1,77 @@
 import { describe, it, expect, beforeAll } from "vitest";
 
 beforeAll(() => {
-  process.env.VAANI_WEBHOOK_SECRET = "vv_whk_test";
+  process.env.VAANI_WEBHOOK_SECRET = "whsec_test";
 });
 
-const { verifiedBody, sign, parseCallEnded, parseToolRequest, VaaniAuthError } = await import("@/lib/vaani/adapter");
+const { verifiedWebhookBody, verifiedToolBody, signWebhook, parseWebhook, parseToolRequest, normaliseTranscript, VaaniAuthError } =
+  await import("@/lib/vaani/adapter");
 
-const req = (body: string, sig?: string) =>
-  new Request("http://x/api/vaani/call-ended", { method: "POST", body, headers: sig ? { "x-vaanivoice-signature": sig } : {} });
+const req = (body: string, headers: Record<string, string> = {}) =>
+  new Request("http://x/api/vaani/call-ended", { method: "POST", body, headers });
 
-describe("signature", () => {
-  it("accepts the documented sha256=<hex> HMAC of the raw body", async () => {
-    const raw = '{"id":"evt_1","type":"call.completed","created":1,"data":{}}';
-    expect(await verifiedBody(req(raw, sign(raw, "vv_whk_test")))).toBe(raw);
+describe("webhook signature (X-Vaani-Signature over '{timestamp}.{body}')", () => {
+  const raw = '{"event":"call_ended","room_name":"r1","call_duration":42.5}';
+  it("accepts a valid, fresh signature", async () => {
+    expect(await verifiedWebhookBody(req(raw, signWebhook(raw, "whsec_test")))).toBe(raw);
   });
-  it("rejects missing, malformed and wrong signatures", async () => {
-    const raw = "{}";
-    await expect(verifiedBody(req(raw))).rejects.toBeInstanceOf(VaaniAuthError);
-    await expect(verifiedBody(req(raw, "deadbeef"))).rejects.toBeInstanceOf(VaaniAuthError);
-    await expect(verifiedBody(req(raw, sign(raw, "other-secret")))).rejects.toBeInstanceOf(VaaniAuthError);
-    await expect(verifiedBody(req(raw + " ", sign(raw, "vv_whk_test")))).rejects.toBeInstanceOf(VaaniAuthError);
+  it("rejects missing, wrong-secret, tampered and stale requests", async () => {
+    await expect(verifiedWebhookBody(req(raw))).rejects.toBeInstanceOf(VaaniAuthError);
+    await expect(verifiedWebhookBody(req(raw, signWebhook(raw, "other")))).rejects.toBeInstanceOf(VaaniAuthError);
+    await expect(verifiedWebhookBody(req(raw + " ", signWebhook(raw, "whsec_test")))).rejects.toBeInstanceOf(VaaniAuthError);
+    const old = signWebhook(raw, "whsec_test", Math.floor(Date.now() / 1000) - 600);
+    await expect(verifiedWebhookBody(req(raw, old))).rejects.toBeInstanceOf(VaaniAuthError);
   });
 });
 
-describe("parseCallEnded (defensive)", () => {
-  it("maps a completed call with a message-array transcript", () => {
-    const e = parseCallEnded(JSON.stringify({
-      id: "evt_9", type: "call.completed", created: 1791480000,
-      data: { call_id: "c1", from: "+91 98XXX XX123", duration_seconds: 245.4, recording_url: "https://r/1.mp3",
-        transcript: [{ role: "assistant", text: "Hello, Aangan Studio." }, { role: "user", content: "Hi, I'm Ritu." }] },
+describe("tool secret header", () => {
+  it("accepts the shared secret and rejects anything else", async () => {
+    await expect(verifiedToolBody(req("{}", { "x-aangan-tool-secret": "whsec_test" }))).resolves.toBe("{}");
+    await expect(verifiedToolBody(req("{}", { "x-aangan-tool-secret": "nope" }))).rejects.toBeInstanceOf(VaaniAuthError);
+    await expect(verifiedToolBody(req("{}"))).rejects.toBeInstanceOf(VaaniAuthError);
+  });
+});
+
+describe("parseWebhook", () => {
+  it("reads call_started for the caller's number", () => {
+    expect(parseWebhook('{"event":"call_started","room_name":"in-1","status":"dialing","phone_number":"+919800000001"}')).toMatchObject({
+      kind: "started", call_id: "in-1", phone_number: "+919800000001", delivery_id: "call_started:in-1",
+    });
+  });
+
+  it("maps call_postprocessing (documented example shape)", () => {
+    const ev = parseWebhook(JSON.stringify({
+      event: "call_postprocessing", call_id: "in-2", timestamp: "2026-10-09T05:00:55+00:00",
+      data: { room_name: "in-2", call_id: "in-2", call_duration: 55150.02, end_reason: "Call ended", summary: "s",
+        recording_url: "https://api.vaanivoice.ai/api/stream/in-2",
+        transcript: "[10:30:00] AGENT: Hello, Aangan Studio.\n\n[10:30:05] USER: Hi, I'm Ritu from Baner.\n\n[10:30:20] USER: 3BHK, full home." },
     }));
-    expect("ignore" in e).toBe(false);
-    if ("ignore" in e) return;
-    expect(e).toMatchObject({ event_id: "evt_9", vaani_call_id: "c1", status: "completed", duration_s: 245, recording_url: "https://r/1.mp3" });
-    expect(e.transcript).toBe("Agent: Hello, Aangan Studio.\nCaller: Hi, I'm Ritu.");
-    expect(e.started_at).toBe(new Date(1791480000 * 1000).toISOString());
+    expect(ev.kind).toBe("postprocessed");
+    if (ev.kind !== "postprocessed") return;
+    expect(ev.event).toMatchObject({ vaani_call_id: "in-2", duration_s: 55, status: "completed", recording_url: "https://api.vaanivoice.ai/api/stream/in-2" });
+    expect(ev.event.transcript).toBe("Agent: Hello, Aangan Studio.\nCaller: Hi, I'm Ritu from Baner.\nCaller: 3BHK, full home.");
+    expect(ev.event.started_at).toBe(new Date(Date.parse("2026-10-09T05:00:55Z") - 55150.02).toISOString());
   });
-  it("treats call.failed without a transcript as missed, and a dropped status as dropped", () => {
-    const m = parseCallEnded(JSON.stringify({ id: "e", type: "call.failed", created: 1, data: { call_id: "c2" } }));
-    const d = parseCallEnded(JSON.stringify({ id: "e2", type: "call.completed", created: 1, data: { call_id: "c3", status: "disconnected", transcript: "Caller: Hi —" } }));
-    expect("ignore" in m ? null : m.status).toBe("missed");
-    expect("ignore" in d ? null : d.status).toBe("dropped");
+
+  it("treats a short call with one caller turn as dropped, and no transcript as missed", () => {
+    const short = parseWebhook(JSON.stringify({ event: "call_postprocessing", call_id: "c", data: { call_duration: 9000, transcript: "AGENT: Hello\nUSER: Hi, I wanted to —" } }));
+    const none = parseWebhook(JSON.stringify({ event: "call_postprocessing", call_id: "d", data: { call_duration: 3000, transcript: "Transcript is not available for further evaluations." } }));
+    expect(short.kind === "postprocessed" && short.event.status).toBe("dropped");
+    expect(none.kind === "postprocessed" && none.event.status).toBe("missed");
   });
-  it("ignores pings and other events", () => {
-    expect(parseCallEnded('{"id":"p","type":"webhook.ping","created":1,"data":{}}')).toMatchObject({ ignore: "event type webhook.ping" });
+
+  it("ignores call_ended and unknown events", () => {
+    expect(parseWebhook('{"event":"call_ended","room_name":"x","call_duration":4}').kind).toBe("ended");
+    expect(parseWebhook('{"event":"user_picked_up_at","room_name":"x"}').kind).toBe("ignore");
   });
 });
 
-it("parseToolRequest accepts args/arguments (object or JSON string)", () => {
+it("normaliseTranscript strips timestamps and relabels speakers", () => {
+  expect(normaliseTranscript("[13:33:14] AGENT: Hi!\n\n[13:33:19] USER: Yeah.")).toEqual({ text: "Agent: Hi!\nCaller: Yeah.", userTurns: 1 });
+});
+
+it("parseToolRequest accepts top-level params, args, or a JSON string", () => {
+  expect(parseToolRequest("qualify", '{"location":"Baner","sq_ft":1200}').args).toEqual({ location: "Baner", sq_ft: 1200 });
   expect(parseToolRequest("qualify", '{"call_id":"c","arguments":"{\\"location\\":\\"Baner\\"}"}')).toEqual({
     tool: "qualify", vaani_call_id: "c", caller_number: null, args: { location: "Baner" },
   });

@@ -107,8 +107,9 @@ export async function bookSlot(b: BookInput, opts: { timeoutMs?: number; now?: D
     await sql()`
       insert into bookings (call_id, vaani_call_id, event_id, slot_start, slot_end, caller_name, caller_email, status)
       values (${b.call_id ?? null}, ${b.vaani_call_id}, ${fakeId}, ${b.slot_start}, ${end}, ${b.caller_name}, ${b.caller_email}, 'dry_run')`;
-    await sql()`insert into actions (call_id, type, status, idempotency_key, payload)
-      values (${b.call_id ?? null}, 'calendar', 'dry_run', ${`calendar:${b.vaani_call_id ?? fakeId}`}, ${JSON.stringify({ calendarId: g.GOOGLE_CALENDAR_ID, sendUpdates: "all", requestBody })})`;
+    await sql()`insert into actions (call_id, type, status, idempotency_key, external_id, payload)
+      values (${b.call_id ?? null}, 'calendar', 'dry_run', ${`calendar:${b.vaani_call_id ?? fakeId}`}, ${fakeId},
+        ${JSON.stringify({ calendarId: g.GOOGLE_CALENDAR_ID, sendUpdates: "all", requestBody })})`;
     return { ok: true, event_id: fakeId, html_link: null, dry_run: true, confirmation_line: confirmation(spoken, b.caller_email) };
   }
 

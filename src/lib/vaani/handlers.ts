@@ -85,8 +85,16 @@ export async function handleBook(r: ToolRequest) {
   return response;
 }
 
+/** call_started carries the caller's number; keep it for the post-processed event. */
+export async function recordCallStart(ev: { call_id: string; phone_number: string | null; status: string | null; raw: unknown }) {
+  await sql()`
+    insert into vaani_call_starts (call_id, phone_number, status, payload)
+    values (${ev.call_id}, ${ev.phone_number}, ${ev.status}, ${JSON.stringify(ev.raw)})
+    on conflict (call_id) do update set phone_number = coalesce(excluded.phone_number, vaani_call_starts.phone_number)`;
+}
+
 /**
- * Post-call: record the delivery once (Vaani reuses the event id on retries), then process.
+ * Post-call: record the delivery once (Vaani retries up to 5 times), then process.
  * Returns quickly; the caller runs `work` after responding.
  */
 export async function acceptCallEnded(e: CallEndedEvent, source: "vaani" | "simulated") {
@@ -97,12 +105,15 @@ export async function acceptCallEnded(e: CallEndedEvent, source: "vaani" | "simu
   return {
     duplicate: false as const,
     work: async (): Promise<ProcessOutcome> => {
-      const outcome = await processCall(toCallRecord(e, source));
-      // Link bookings made mid-call to the call record.
-      await sql()`update bookings set call_id = ${outcome.call_id} where vaani_call_id = ${e.vaani_call_id} and call_id is null`;
-      await sql()`update actions set call_id = ${outcome.call_id}
-        where call_id is null and type = 'calendar' and idempotency_key = ${`calendar:${e.vaani_call_id}`}`;
-      return outcome;
+      if (!e.caller_number) {
+        const [start] = (await sql()`
+          select phone_number, received_at from vaani_call_starts where call_id = ${e.vaani_call_id}`) as { phone_number: string | null; received_at: string }[];
+        if (start) {
+          e.caller_number = start.phone_number;
+          e.started_at = new Date(start.received_at).toISOString(); // more accurate than end − duration
+        }
+      }
+      return processCall(toCallRecord(e, source)); // links mid-call bookings before routing
     },
   };
 }

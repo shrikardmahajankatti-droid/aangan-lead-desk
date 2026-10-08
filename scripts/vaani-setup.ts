@@ -1,14 +1,14 @@
-// Builds the Vaani agent config from /context, version-controlled in /vaani.
+// Builds the Vaani agent from /context and (with --apply) creates or updates it via the
+// Vaani AI API (docs.vaanivoice.ai): POST /api/create-agent, PATCH /api/agent/{id}/persona.
+// Also writes the config to /vaani so it's version-controlled.
 //
-// Vaani's public API (vaanilabs.in/openapi/v1/vaanivoice.yaml) has no endpoints to
-// create agents/flows, register tools or webhooks: those live in the dashboard's
-// Flow Builder. So this script writes the exact config to paste/enter there:
-//   vaani/system-prompt.md   – the agent's instructions
-//   vaani/agent-config.json  – greeting, languages, tools (URL + JSON schema), webhook
-// If Vaani later documents a config API, push it from here.
+// Custom tools are created in the dashboard (Tools & Actions); their request format is
+// not in the public API. vaani/agent-config.json lists exactly what to enter.
 //
-// Usage: npm run vaani:config
+// Usage: npm run vaani:config            (write files only)
+//        npm run vaani:config -- --apply (create the agent, or update it if VAANI_AGENT_ID is set)
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { VAANI_API, TOOL_SECRET_HEADER } from "../src/lib/vaani/adapter";
 import { z } from "zod";
 import { LiveArgs, LINES } from "../src/lib/liveQualify";
 
@@ -55,16 +55,16 @@ For any pricing question, say exactly:
 Then carry on. Asking about price never disqualifies a caller.
 
 ## Existing clients with a complaint
-If the caller is an existing client unhappy about an ongoing project: apologise, take their name, project and what's wrong, then call **qualify** with is_existing_client_complaint = true and say its \`say\` line. Do not try to qualify them or book a consultation.
+If the caller is an existing client unhappy about an ongoing project: apologise, take their name, project and what's wrong, then call **aangan_qualify** with is_existing_client_complaint = true and say its \`say\` line. Do not try to qualify them or book a consultation.
 
 ## Qualifying and booking
-1. Once you know the area and the scope (or as soon as it's clearly a complaint), call **qualify** with everything collected so far.
+1. Once you know the area and the scope (or as soon as it's clearly a complaint), call **aangan_qualify** with everything collected so far.
 2. Do what its response says:
-   - \`offer_booking: true\` → call **get_slots**, read the options from its \`say\`, let the caller choose, then call **book_slot** with that \`slot_id\` and read back its \`say\` (the confirmation).
-   - \`ask_next\` present → ask exactly that one question, then call **qualify** again with the answer.
+   - \`offer_booking: true\` → call **aangan_get_slots**, read the options from its \`say\`, let the caller choose, then call **aangan_book_slot** with that \`slot_id\` and read back its \`say\` (the confirmation).
+   - \`ask_next\` present → ask exactly that one question, then call **aangan_qualify** again with the answer.
    - otherwise → say its \`say\` line politely and close the call. Do not offer a booking.
 3. If a tool fails or returns \`booking_pending\`, say: "${LINES.fallback}" and close warmly.
-Only offer a consultation when qualify returned \`offer_booking: true\`.
+Only offer a consultation when aangan_qualify returned \`offer_booking: true\`.
 
 ## Lines from the studio's rulebook (qualification_logic.md, "On the live call")
 ${liveSection}
@@ -84,7 +84,7 @@ const toolSchema = (s: z.ZodType) => {
 
 const config = {
   _note:
-    "Enter this in the Vaani dashboard (Flow Builder). Every tool and the webhook must be signed with the webhook secret (X-VaaniVoice-Signature: sha256=<hex HMAC of raw body>), matching VAANI_WEBHOOK_SECRET in Vercel.",
+    "Agent: created/updated by `npm run vaani:config -- --apply`. Tools: Tools & Actions → New Action → Create Custom Tool, one per entry below, then attach to the agent. Webhook: Developers → Webhooks → Agent Webhook, Secret = VAANI_WEBHOOK_SECRET (signs X-Vaani-Signature over '{timestamp}.{body}').",
   name: "Aangan Studio – Front Desk",
   greeting,
   languages: ["en-IN", "hi-IN", "mr-IN"],
@@ -92,27 +92,30 @@ const config = {
   system_prompt_file: "vaani/system-prompt.md",
   tools: [
     {
-      name: "qualify",
+      name: "aangan_qualify",
       description: "Check the enquiry against the studio's rules. Call once area and scope are known, again after an ask_next answer, or immediately for an existing-client complaint.",
       method: "POST",
       url: `${base}/api/vaani/qualify`,
-      timeout_ms: 3000,
+      timeout_ms: 4000,
+      headers: { [TOOL_SECRET_HEADER]: "<VAANI_WEBHOOK_SECRET — paste from clipboard, never commit>" },
       parameters: toolSchema(LiveArgs),
     },
     {
-      name: "get_slots",
+      name: "aangan_get_slots",
       description: "Get three open consultation times (next 7 days, studio hours). Only after qualify returned offer_booking: true.",
       method: "POST",
       url: `${base}/api/vaani/slots`,
-      timeout_ms: 3000,
+      timeout_ms: 4000,
+      headers: { [TOOL_SECRET_HEADER]: "<VAANI_WEBHOOK_SECRET — paste from clipboard, never commit>" },
       parameters: { type: "object", properties: {} },
     },
     {
-      name: "book_slot",
+      name: "aangan_book_slot",
       description: "Book the consultation the caller chose. Re-checks the time is still free and sends calendar invites.",
       method: "POST",
       url: `${base}/api/vaani/book`,
-      timeout_ms: 3000,
+      timeout_ms: 4000,
+      headers: { [TOOL_SECRET_HEADER]: "<VAANI_WEBHOOK_SECRET — paste from clipboard, never commit>" },
       parameters: toolSchema(
         z.object({
           slot_id: z.string().describe("slot_id from get_slots"),
@@ -124,9 +127,8 @@ const config = {
       ),
     },
   ],
-  tool_request_shape: "JSON body; arguments under `args` (or `arguments`), plus `call_id` and `caller_number` if Vaani can include them.",
-  tool_response_shape: "JSON; the agent should speak the `say` field.",
-  webhook: { url: `${base}/api/vaani/call-ended`, events: ["call.completed", "call.failed"] },
+  tool_response_shape: "JSON; the agent should speak the `say` field (map $.say to a variable if the dashboard asks).",
+  webhook: { type: "Agent Webhook", url: `${base}/api/vaani/call-ended`, secret: "VAANI_WEBHOOK_SECRET", events_used: ["call_started", "call_postprocessing"] },
 };
 
 mkdirSync("vaani", { recursive: true });
@@ -141,3 +143,44 @@ if (leaks) {
 }
 console.log(`✓ vaani/system-prompt.md (${systemPrompt.length} chars, no pricing figures)`);
 console.log(`✓ vaani/agent-config.json (tools → ${base}/api/vaani/*)`);
+
+// ---------------------------------------------------------------------------
+// --apply: create or update the agent through the Vaani AI API
+// ---------------------------------------------------------------------------
+if (process.argv.includes("--apply")) {
+  const key = process.env.VAANI_API_KEY;
+  if (!key) throw new Error("VAANI_API_KEY is not set");
+  const headers = { "X-API-Key": key, "Content-Type": "application/json" };
+  const persona = {
+    identity: {
+      system_prompt: systemPrompt,
+      greeting_message: { agent_message: greeting, agent_speech_delay: 1, interruptible: true, let_user_speak_first: false },
+      personality: { tone: "warm", style: "professional" },
+    },
+    // English by default; detect Hindi/Marathi callers.
+    senses_capabilities: { language: "en", auto_detect: true },
+  };
+
+  let agentId = process.env.VAANI_AGENT_ID;
+  if (!agentId) {
+    const res = await fetch(`${VAANI_API}/api/create-agent`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ agent_display_name: config.name, config: { persona } }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body.agent_id) throw new Error(`create-agent → ${res.status}: ${JSON.stringify(body).slice(0, 300)}`);
+    agentId = body.agent_id as string;
+    // Remember it so the next run updates instead of creating a duplicate.
+    const envPath = ".env.local";
+    const lines = readFileSync(envPath, "utf8").split("\n").filter((l) => !l.startsWith("VAANI_AGENT_ID="));
+    lines.push(`VAANI_AGENT_ID=${agentId}`);
+    writeFileSync(envPath, lines.join("\n").replace(/\n*$/, "\n"), { mode: 0o600 });
+    console.log(`✓ created agent "${config.name}" → ${agentId} (saved as VAANI_AGENT_ID in .env.local)`);
+  } else {
+    const res = await fetch(`${VAANI_API}/api/agent/${agentId}/persona`, { method: "PATCH", headers, body: JSON.stringify(persona) });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`update persona → ${res.status}: ${text.slice(0, 300)}`);
+    console.log(`✓ updated persona of agent ${agentId}`);
+  }
+}

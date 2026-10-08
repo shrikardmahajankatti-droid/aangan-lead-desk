@@ -115,6 +115,8 @@ export async function processCall(record: CallRecord): Promise<ProcessOutcome> {
     }
     // A completed call may be the callback for an earlier dropped call from the same number.
     const transcript = await absorbEarlierDropped(callId, record);
+    // Bookings made mid-call must be attached before routing (deal stage, "Booked:" in the email).
+    await linkMidCallBookings(callId, record);
 
     // 3. Gemini.
     const input = callUserPrompt({
@@ -138,6 +140,27 @@ export async function processCall(record: CallRecord): Promise<ProcessOutcome> {
     await db`update calls set analysis_status = 'error', analysis_error = ${message} where id = ${callId}`;
     return { call_id: callId, external_id: record.external_id, outcome: "error", record_type: null, error: message };
   }
+}
+
+/**
+ * Mid-call bookings → this call. By Vaani call id when the tool call carried it; otherwise
+ * (dashboard custom tools may not send it) an unlinked booking created during this call.
+ */
+async function linkMidCallBookings(callId: string, r: CallRecord) {
+  if (r.source === "seed") return;
+  const linked = (await sql()`
+    update bookings set call_id = ${callId}
+    where call_id is null and vaani_call_id = ${r.external_id} returning id`) as { id: string }[];
+  if (!linked.length && r.started_at) {
+    await sql()`
+      update bookings set call_id = ${callId}, vaani_call_id = ${r.external_id}
+      where call_id is null and vaani_call_id is null
+        and created_at between ${r.started_at}::timestamptz - interval '1 minute'
+                           and ${r.started_at}::timestamptz + make_interval(secs => ${(r.duration_s ?? 600) + 120})`;
+  }
+  await sql()`
+    update actions a set call_id = ${callId} from bookings b
+    where a.call_id is null and a.type = 'calendar' and b.call_id = ${callId} and a.external_id = b.event_id`;
 }
 
 async function markNoConversation(callId: string, recordType: "missed_call" | "dropped_call") {
