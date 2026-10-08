@@ -4,13 +4,25 @@ beforeAll(() => {
   process.env.VAANI_WEBHOOK_SECRET = "whsec_test";
 });
 
-const { verifiedWebhookBody, verifiedToolBody, signWebhook, parseWebhook, parseToolRequest, normaliseTranscript, VaaniAuthError } =
+const { verifiedWebhookBody, verifiedToolBody, signWebhook, signAgentWebhook, parseWebhook, parseToolRequest, normaliseTranscript, VaaniAuthError } =
   await import("@/lib/vaani/adapter");
 
 const req = (body: string, headers: Record<string, string> = {}) =>
   new Request("http://x/api/vaani/call-ended", { method: "POST", body, headers });
 
-describe("webhook signature (X-Vaani-Signature over '{timestamp}.{body}')", () => {
+describe("agent webhook signature (X-Webhook-Signature over the raw body)", () => {
+  const raw = '{"event":"webhook_test","timestamp":"2026-10-09T00:11:18Z"}';
+  it("accepts the dashboard's signature and rejects tampering or the wrong secret", async () => {
+    expect(await verifiedWebhookBody(req(raw, signAgentWebhook(raw, "whsec_test", "webhook_test")))).toBe(raw);
+    await expect(verifiedWebhookBody(req(raw + " ", signAgentWebhook(raw, "whsec_test")))).rejects.toBeInstanceOf(VaaniAuthError);
+    await expect(verifiedWebhookBody(req(raw, signAgentWebhook(raw, "other")))).rejects.toBeInstanceOf(VaaniAuthError);
+  });
+  it("the test event is acknowledged and ignored", () => {
+    expect(parseWebhook(raw).kind).toBe("ignore");
+  });
+});
+
+describe("campaign webhook signature (X-Vaani-Signature over '{timestamp}.{body}')", () => {
   const raw = '{"event":"call_ended","room_name":"r1","call_duration":42.5}';
   it("accepts a valid, fresh signature", async () => {
     expect(await verifiedWebhookBody(req(raw, signWebhook(raw, "whsec_test")))).toBe(raw);

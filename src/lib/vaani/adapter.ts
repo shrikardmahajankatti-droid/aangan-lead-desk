@@ -1,5 +1,5 @@
 import "server-only";
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { env } from "../env";
 import type { CallRecord } from "../pipeline";
 import type { CallEndedEvent, ToolName, ToolRequest } from "./types";
@@ -7,9 +7,9 @@ import type { CallEndedEvent, ToolName, ToolRequest } from "./types";
 // THE ONLY VAANI-SPECIFIC FILE.  Platform: Vaani AI (app.vaanivoice.ai, docs.vaanivoice.ai)
 //
 // Documented and implemented exactly:
-//   - Webhooks: POST JSON, `{ event, … }`. Signed when a secret is set:
-//       X-Vaani-Signature: sha256=<hex HMAC-SHA256(secret, "{timestamp}.{raw body}")>
-//       X-Vaani-Timestamp: <unix seconds>   (reject if > 5 min old)
+//   - Webhooks: POST JSON, `{ event, … }`. Agent webhooks are signed
+//       X-Webhook-Signature: sha256=<hex HMAC-SHA256(secret, raw body)>   (observed)
+//     campaign webhooks X-Vaani-Signature over "{timestamp}.{body}"     (documented)
 //     Events: call_started (has phone_number), call_ended (call_duration in s),
 //     call_postprocessing (call_id, transcript, summary, entities, recording_url,
 //     call_duration in ms), plus outbound-only ringing/no-answer/rejected/failed.
@@ -30,64 +30,31 @@ function safeEqual(a: Buffer, b: Buffer) {
 }
 
 /**
- * TEMPORARY diagnostics for the first real deliveries: header names, whether signature/timestamp
- * exist, and which candidate scheme would match — booleans only, never values or the body.
+ * Webhooks. Two signing schemes are accepted, both keyed with VAANI_WEBHOOK_SECRET:
+ *  - Agent webhooks (observed from the dashboard's Test Connectivity, not in the docs):
+ *      X-Webhook-Signature: sha256=<hex HMAC-SHA256(secret, raw body)>, X-Webhook-Event: <event>
+ *    No timestamp header; retries and replays are made harmless by deduping on event + call id.
+ *  - Campaign webhooks (documented): X-Vaani-Signature over "{timestamp}.{raw body}" with
+ *    X-Vaani-Timestamp, rejected if older than 5 minutes.
+ * Returns the raw body.
  */
-function logSignatureDiagnostics(req: Request, raw: string, secret: string, reason: string) {
-  const sigVal = req.headers.get("x-webhook-signature") ?? req.headers.get("x-vaani-signature") ?? "";
-  const stripped = sigVal.replace(/^(sha256|v1)=/i, "").trim();
-  let bodyTs: string | null = null;
-  try {
-    const j = JSON.parse(raw) as Record<string, unknown>;
-    bodyTs = String(j.timestamp ?? (j.data as Record<string, unknown> | undefined)?.timestamp ?? "") || null;
-  } catch {}
-  const mac = (data: string, enc: "hex" | "base64" | "base64url") => createHmac("sha256", secret).update(data, "utf8").digest(enc);
-  const eq = (a: string) => a === stripped || a.toLowerCase() === stripped.toLowerCase();
-  let compactRaw = raw;
-  try { compactRaw = JSON.stringify(JSON.parse(raw)); } catch {}
-  const candidates = {
-    body_hex: eq(mac(raw, "hex")),
-    body_base64: eq(mac(raw, "base64")),
-    body_base64url: eq(mac(raw, "base64url")),
-    compact_json_hex: eq(mac(compactRaw, "hex")),
-    bodyts_dot_body_hex: bodyTs ? eq(mac(`${bodyTs}.${raw}`, "hex")) : false,
-    sha256_of_secret_plus_body: eq(createHash("sha256").update(secret + raw).digest("hex")),
-    plain_secret: sigVal === secret,
-  };
-  console.warn(
-    "vaani webhook rejected:",
-    JSON.stringify({
-      reason,
-      event: req.headers.get("x-webhook-event"),
-      sigPrefix: sigVal.match(/^[a-z0-9]+=/i)?.[0] ?? null,
-      sigLen: stripped.length,
-      sigCharset: /^[0-9a-f]+$/i.test(stripped) ? "hex" : /^[A-Za-z0-9+/=_-]+$/.test(stripped) ? "base64ish" : "other",
-      bodyHasTimestamp: Boolean(bodyTs),
-      bodyLen: raw.length,
-      candidates,
-    }),
-  );
-}
-
-/** Webhooks: verifies X-Vaani-Signature over "{timestamp}.{raw body}". Returns the raw body. */
 export async function verifiedWebhookBody(req: Request, now = Date.now()): Promise<string> {
   const raw = await req.text();
   const secret = env("vaani").VAANI_WEBHOOK_SECRET;
-  try {
-    return checkWebhookSignature(req, raw, secret, now);
-  } catch (e) {
-    logSignatureDiagnostics(req, raw, secret, (e as Error).message);
-    throw e;
-  }
-}
+  const hmac = (data: string) => createHmac("sha256", secret).update(data, "utf8").digest();
+  const hexOf = (v: string | null) => v?.match(/^sha256=([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null;
 
-function checkWebhookSignature(req: Request, raw: string, secret: string, now: number): string {
-  const sig = (req.headers.get("x-vaani-signature") ?? "").match(/^sha256=([0-9a-f]{64})$/i);
+  const agentSig = hexOf(req.headers.get("x-webhook-signature"));
+  if (agentSig) {
+    if (!safeEqual(Buffer.from(agentSig, "hex"), hmac(raw))) throw new VaaniAuthError("bad signature");
+    return raw;
+  }
+
+  const campaignSig = hexOf(req.headers.get("x-vaani-signature"));
   const ts = req.headers.get("x-vaani-timestamp") ?? "";
-  if (!sig || !/^\d+$/.test(ts)) throw new VaaniAuthError("missing signature or timestamp");
+  if (!campaignSig || !/^\d+$/.test(ts)) throw new VaaniAuthError("missing signature");
   if (Math.abs(now / 1000 - Number(ts)) > MAX_SKEW_S) throw new VaaniAuthError("stale timestamp");
-  const expected = createHmac("sha256", secret).update(`${ts}.${raw}`, "utf8").digest();
-  if (!safeEqual(Buffer.from(sig[1].toLowerCase(), "hex"), expected)) throw new VaaniAuthError("bad signature");
+  if (!safeEqual(Buffer.from(campaignSig, "hex"), hmac(`${ts}.${raw}`))) throw new VaaniAuthError("bad signature");
   return raw;
 }
 
@@ -99,7 +66,12 @@ export async function verifiedToolBody(req: Request): Promise<string> {
   return req.text();
 }
 
-/** For tests / the simulator: signs a body the way Vaani does. */
+/** For tests / the simulator: signs a body the way Vaani's agent webhooks do. */
+export function signAgentWebhook(raw: string, secret = env("vaani").VAANI_WEBHOOK_SECRET, event = "call_postprocessing") {
+  return { "x-webhook-signature": `sha256=${createHmac("sha256", secret).update(raw, "utf8").digest("hex")}`, "x-webhook-event": event };
+}
+
+/** For tests: the documented campaign-webhook signature. */
 export function signWebhook(raw: string, secret = env("vaani").VAANI_WEBHOOK_SECRET, ts = Math.floor(Date.now() / 1000)) {
   return { "x-vaani-signature": `sha256=${createHmac("sha256", secret).update(`${ts}.${raw}`, "utf8").digest("hex")}`, "x-vaani-timestamp": String(ts) };
 }
