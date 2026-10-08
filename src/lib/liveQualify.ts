@@ -43,21 +43,44 @@ const LiveOutput = z.object({
   nurture_eligible: z.boolean(),
 });
 
+// Vaani custom-tool parameters may arrive as strings ("1200", "true", ""), so coerce carefully:
+// "" / "null" / "unknown" → null; "false"/"no" → false (z.coerce.boolean would make it true).
+const blank = (v: unknown) => v === undefined || v === null || (typeof v === "string" && /^\s*(|null|none|unknown|n\/a)\s*$/i.test(v));
+const optNum = z.preprocess((v) => {
+  if (blank(v)) return null;
+  const n = typeof v === "number" ? v : Number(String(v).replace(/[,₹\s]|sq\s*ft|lakh|l$/gi, ""));
+  return Number.isFinite(n) ? n : null;
+}, z.number().nullable());
+const optInt = z.preprocess((v) => {
+  if (blank(v)) return null;
+  const n = typeof v === "number" ? v : parseInt(String(v), 10);
+  return Number.isFinite(n) ? Math.round(n) : null;
+}, z.number().int().nullable());
+const optBool = z.preprocess((v) => {
+  if (typeof v === "boolean") return v;
+  if (blank(v)) return null;
+  return /^(true|yes|y|1)$/i.test(String(v).trim());
+}, z.boolean().nullable());
+const optStr = z.preprocess((v) => (blank(v) ? null : String(v)), z.string().nullable());
+const lowerOrNull = (v: unknown) => (blank(v) ? null : String(v).trim().toLowerCase());
+const scopeExtent = z.preprocess(lowerOrNull, z.enum(["full", "partial", "unknown"]).nullable().catch(null));
+const segmentEnum = z.preprocess(lowerOrNull, z.enum(["residential", "commercial"]).nullable().catch(null));
+
 export const LiveArgs = z.object({
-  caller_name: z.string().nullish(),
-  location: z.string().nullish(),
-  property_type: z.string().nullish(),
-  sq_ft: z.coerce.number().nullish(),
-  bhk: z.coerce.number().int().nullish(),
-  scope: z.string().nullish(),
-  scope_extent: z.enum(["full", "partial", "unknown"]).nullish(),
-  rooms_in_scope: z.coerce.number().int().nullish(),
-  segment: z.enum(["residential", "commercial"]).nullish(),
-  timeline: z.string().nullish(),
-  decision_maker: z.string().nullish(),
-  volunteered_budget_lakh: z.coerce.number().nullish(),
-  is_existing_client_complaint: z.coerce.boolean().nullish(),
-  notes: z.string().nullish(),
+  caller_name: optStr.optional(),
+  location: optStr.optional(),
+  property_type: optStr.optional(),
+  sq_ft: optNum.optional(),
+  bhk: optInt.optional(),
+  scope: optStr.optional(),
+  scope_extent: scopeExtent.optional(),
+  rooms_in_scope: optInt.optional(),
+  segment: segmentEnum.optional(),
+  timeline: optStr.optional(),
+  decision_maker: optStr.optional(),
+  volunteered_budget_lakh: optNum.optional(),
+  is_existing_client_complaint: optBool.optional(),
+  notes: optStr.optional(),
 });
 export type LiveArgs = z.infer<typeof LiveArgs>;
 
