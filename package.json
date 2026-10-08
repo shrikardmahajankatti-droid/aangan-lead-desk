@@ -18,7 +18,8 @@
     "deliver": "tsx --conditions=react-server --env-file=.env.local scripts/deliver.ts",
     "hubspot:setup": "tsx --conditions=react-server --env-file=.env.local scripts/hubspot-setup.ts",
     "google:auth": "tsx --env-file=.env.local scripts/google-auth.ts",
-    "calendar:check": "tsx --conditions=react-server --env-file=.env.local scripts/calendar-check.ts"
+    "calendar:check": "tsx --conditions=react-server --env-file=.env.local scripts/calendar-check.ts",
+    "vaani:config": "tsx --conditions=react-server --env-file=.env.local scripts/vaani-setup.ts"
   },
   "dependencies": {
     "@google/genai": "^2.28.0",

@@ -1,0 +1,203 @@
+{
+  "_note": "Enter this in the Vaani dashboard (Flow Builder). Every tool and the webhook must be signed with the webhook secret (X-VaaniVoice-Signature: sha256=<hex HMAC of raw body>), matching VAANI_WEBHOOK_SECRET in Vercel.",
+  "name": "Aangan Studio – Front Desk",
+  "greeting": "Hello, Aangan Studio. How can I help you today?",
+  "languages": [
+    "en-IN",
+    "hi-IN",
+    "mr-IN"
+  ],
+  "language_policy": "Start in English; switch to the caller's language (Hindi/Marathi) if they use it. Use only languages Vaani supports.",
+  "system_prompt_file": "vaani/system-prompt.md",
+  "tools": [
+    {
+      "name": "qualify",
+      "description": "Check the enquiry against the studio's rules. Call once area and scope are known, again after an ask_next answer, or immediately for an existing-client complaint.",
+      "method": "POST",
+      "url": "https://aangan-lead-desk.vercel.app/api/vaani/qualify",
+      "timeout_ms": 3000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "caller_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "location": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "property_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sq_ft": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "bhk": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope_extent": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "full",
+                  "partial",
+                  "unknown"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rooms_in_scope": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "segment": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "residential",
+                  "commercial"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "timeline": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "decision_maker": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "volunteered_budget_lakh": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "is_existing_client_complaint": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "get_slots",
+      "description": "Get three open consultation times (next 7 days, studio hours). Only after qualify returned offer_booking: true.",
+      "method": "POST",
+      "url": "https://aangan-lead-desk.vercel.app/api/vaani/slots",
+      "timeout_ms": 3000,
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "book_slot",
+      "description": "Book the consultation the caller chose. Re-checks the time is still free and sends calendar invites.",
+      "method": "POST",
+      "url": "https://aangan-lead-desk.vercel.app/api/vaani/book",
+      "timeout_ms": 3000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "slot_id": {
+            "type": "string",
+            "description": "slot_id from get_slots"
+          },
+          "caller_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "location": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "caller_email": {
+            "description": "Only if the caller gave one",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "caller_phone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "slot_id"
+        ]
+      }
+    }
+  ],
+  "tool_request_shape": "JSON body; arguments under `args` (or `arguments`), plus `call_id` and `caller_number` if Vaani can include them.",
+  "tool_response_shape": "JSON; the agent should speak the `say` field.",
+  "webhook": {
+    "url": "https://aangan-lead-desk.vercel.app/api/vaani/call-ended",
+    "events": [
+      "call.completed",
+      "call.failed"
+    ]
+  }
+}
