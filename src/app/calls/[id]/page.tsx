@@ -124,7 +124,7 @@ async function CallDetail({ params }: { params: PageProps<"/calls/[id]">["params
 
           {(c.verdict === "qualified" || c.record_type === "escalation") && (
             <Card title={c.record_type === "escalation" ? "Escalation email preview (to Nikhil)" : "Designer email preview"}>
-              <EmailPreview c={c} booking={bookings.find((b) => b.status === "booked") ?? null} />
+              <EmailPreview c={c} booking={(bookings.find((b) => b.status === "booked") as { slot_start: string } | undefined) ?? null} />
             </Card>
           )}
 
