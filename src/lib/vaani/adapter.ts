@@ -1,5 +1,5 @@
 import "server-only";
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { env } from "../env";
 import type { CallRecord } from "../pipeline";
 import type { CallEndedEvent, ToolName, ToolRequest } from "./types";
@@ -34,23 +34,38 @@ function safeEqual(a: Buffer, b: Buffer) {
  * exist, and which candidate scheme would match — booleans only, never values or the body.
  */
 function logSignatureDiagnostics(req: Request, raw: string, secret: string, reason: string) {
-  const h = Object.fromEntries([...req.headers.entries()].map(([k]) => [k, true]));
-  const sigHeader = [...req.headers.keys()].find((k) => /sign/i.test(k));
-  const sigVal = sigHeader ? (req.headers.get(sigHeader) ?? "") : "";
-  const hex = sigVal.replace(/^sha256=/i, "").trim();
-  const tsHeader = [...req.headers.keys()].find((k) => /timestamp|-ts$/i.test(k));
-  const ts = tsHeader ? (req.headers.get(tsHeader) ?? "") : "";
-  const mac = (data: string, enc: "hex" | "base64") => createHmac("sha256", secret).update(data, "utf8").digest(enc);
+  const sigVal = req.headers.get("x-webhook-signature") ?? req.headers.get("x-vaani-signature") ?? "";
+  const stripped = sigVal.replace(/^(sha256|v1)=/i, "").trim();
+  let bodyTs: string | null = null;
+  try {
+    const j = JSON.parse(raw) as Record<string, unknown>;
+    bodyTs = String(j.timestamp ?? (j.data as Record<string, unknown> | undefined)?.timestamp ?? "") || null;
+  } catch {}
+  const mac = (data: string, enc: "hex" | "base64" | "base64url") => createHmac("sha256", secret).update(data, "utf8").digest(enc);
+  const eq = (a: string) => a === stripped || a.toLowerCase() === stripped.toLowerCase();
+  let compactRaw = raw;
+  try { compactRaw = JSON.stringify(JSON.parse(raw)); } catch {}
   const candidates = {
-    ts_dot_body_hex: ts ? mac(`${ts}.${raw}`, "hex") === hex.toLowerCase() : false,
-    body_hex: mac(raw, "hex") === hex.toLowerCase(),
-    body_base64: mac(raw, "base64") === hex,
-    ts_dot_body_base64: ts ? mac(`${ts}.${raw}`, "base64") === hex : false,
-    plain_secret_header: [...req.headers.values()].some((v) => v === secret),
+    body_hex: eq(mac(raw, "hex")),
+    body_base64: eq(mac(raw, "base64")),
+    body_base64url: eq(mac(raw, "base64url")),
+    compact_json_hex: eq(mac(compactRaw, "hex")),
+    bodyts_dot_body_hex: bodyTs ? eq(mac(`${bodyTs}.${raw}`, "hex")) : false,
+    sha256_of_secret_plus_body: eq(createHash("sha256").update(secret + raw).digest("hex")),
+    plain_secret: sigVal === secret,
   };
   console.warn(
     "vaani webhook rejected:",
-    JSON.stringify({ reason, headerNames: Object.keys(h), sigHeader, sigFormat: sigVal ? (sigVal.startsWith("sha256=") ? "sha256=…" : `len${sigVal.length}`) : null, tsHeader, tsLooksUnix: /^\d{10}$/.test(ts), bodyLen: raw.length, candidates }),
+    JSON.stringify({
+      reason,
+      event: req.headers.get("x-webhook-event"),
+      sigPrefix: sigVal.match(/^[a-z0-9]+=/i)?.[0] ?? null,
+      sigLen: stripped.length,
+      sigCharset: /^[0-9a-f]+$/i.test(stripped) ? "hex" : /^[A-Za-z0-9+/=_-]+$/.test(stripped) ? "base64ish" : "other",
+      bodyHasTimestamp: Boolean(bodyTs),
+      bodyLen: raw.length,
+      candidates,
+    }),
   );
 }
 
