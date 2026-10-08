@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getCall } from "@/lib/dashboard";
+import { designerEmail, escalationEmail } from "@/lib/email";
 import { fmtDateTime, fmtDuration, fmtInr } from "@/lib/format";
 import { ScoreBadge, StatusDot, TypeBadge, UrgentFlag, VerdictBadge } from "../../_components/badges";
 
@@ -118,6 +119,12 @@ async function CallDetail({ params }: { params: PageProps<"/calls/[id]">["params
                   <ul className="mt-1 list-disc pl-5">{c.reasons.map((r) => <li key={r}>{r}</li>)}</ul>
                 </div>
               )}
+            </Card>
+          )}
+
+          {(c.verdict === "qualified" || c.record_type === "escalation") && (
+            <Card title={c.record_type === "escalation" ? "Escalation email preview (to Nikhil)" : "Designer email preview"}>
+              <EmailPreview c={c} booking={bookings.find((b) => b.status === "booked") ?? null} />
             </Card>
           )}
 
@@ -243,6 +250,20 @@ async function CallDetail({ params }: { params: PageProps<"/calls/[id]">["params
           </p>
         </div>
       </div>
+    </div>
+  );
+}
+
+function EmailPreview({ c, booking }: { c: Parameters<typeof designerEmail>[0] & { record_type: string | null }; booking: { slot_start: string } | null }) {
+  const baseUrl = process.env.APP_BASE_URL ?? "";
+  const e =
+    c.record_type === "escalation"
+      ? escalationEmail(c, { baseUrl })
+      : designerEmail(c, booking, { designerName: process.env.DESIGNER_NAME, baseUrl });
+  return (
+    <div className="text-sm">
+      <p className="mb-2 font-medium">{e.subject}</p>
+      <pre className="max-h-96 overflow-auto rounded bg-stone-50 p-3 font-sans text-[13px] whitespace-pre-wrap dark:bg-stone-800">{e.text}</pre>
     </div>
   );
 }

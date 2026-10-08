@@ -11,6 +11,7 @@ import {
   callUserPrompt,
 } from "./prompts/analyse-post-call";
 import { routeCall } from "./route";
+import { deliver } from "./deliver";
 import type { CallLeg } from "./pdfSplit";
 
 /** Our own call shape. Vaani payloads and seed enquiries are both mapped to this. */
@@ -127,8 +128,10 @@ export async function processCall(record: CallRecord): Promise<ProcessOutcome> {
     const recordType = record.flags?.escalate ? "escalation" : await analyseLead(callId, input);
     if (recordType === "escalation") await analyseEscalation(callId, input, record.flags?.escalate === true);
 
-    // 5. Route by verdict / type.
+    // 5. Route by verdict / type, then send. Delivery failures land on their own
+    // statuses (retryable from the dashboard), not on the analysis.
     const verdict = await routeCall(callId);
+    await deliver(callId).catch((e) => console.error(`deliver ${callId}:`, (e as Error).message));
     return { call_id: callId, external_id: record.external_id, outcome: "processed", record_type: recordType, verdict };
   } catch (e) {
     const message = (e as Error).message;
