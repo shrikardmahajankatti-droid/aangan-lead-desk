@@ -29,10 +29,44 @@ function safeEqual(a: Buffer, b: Buffer) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+/**
+ * TEMPORARY diagnostics for the first real deliveries: header names, whether signature/timestamp
+ * exist, and which candidate scheme would match — booleans only, never values or the body.
+ */
+function logSignatureDiagnostics(req: Request, raw: string, secret: string, reason: string) {
+  const h = Object.fromEntries([...req.headers.entries()].map(([k]) => [k, true]));
+  const sigHeader = [...req.headers.keys()].find((k) => /sign/i.test(k));
+  const sigVal = sigHeader ? (req.headers.get(sigHeader) ?? "") : "";
+  const hex = sigVal.replace(/^sha256=/i, "").trim();
+  const tsHeader = [...req.headers.keys()].find((k) => /timestamp|-ts$/i.test(k));
+  const ts = tsHeader ? (req.headers.get(tsHeader) ?? "") : "";
+  const mac = (data: string, enc: "hex" | "base64") => createHmac("sha256", secret).update(data, "utf8").digest(enc);
+  const candidates = {
+    ts_dot_body_hex: ts ? mac(`${ts}.${raw}`, "hex") === hex.toLowerCase() : false,
+    body_hex: mac(raw, "hex") === hex.toLowerCase(),
+    body_base64: mac(raw, "base64") === hex,
+    ts_dot_body_base64: ts ? mac(`${ts}.${raw}`, "base64") === hex : false,
+    plain_secret_header: [...req.headers.values()].some((v) => v === secret),
+  };
+  console.warn(
+    "vaani webhook rejected:",
+    JSON.stringify({ reason, headerNames: Object.keys(h), sigHeader, sigFormat: sigVal ? (sigVal.startsWith("sha256=") ? "sha256=…" : `len${sigVal.length}`) : null, tsHeader, tsLooksUnix: /^\d{10}$/.test(ts), bodyLen: raw.length, candidates }),
+  );
+}
+
 /** Webhooks: verifies X-Vaani-Signature over "{timestamp}.{raw body}". Returns the raw body. */
 export async function verifiedWebhookBody(req: Request, now = Date.now()): Promise<string> {
   const raw = await req.text();
   const secret = env("vaani").VAANI_WEBHOOK_SECRET;
+  try {
+    return checkWebhookSignature(req, raw, secret, now);
+  } catch (e) {
+    logSignatureDiagnostics(req, raw, secret, (e as Error).message);
+    throw e;
+  }
+}
+
+function checkWebhookSignature(req: Request, raw: string, secret: string, now: number): string {
   const sig = (req.headers.get("x-vaani-signature") ?? "").match(/^sha256=([0-9a-f]{64})$/i);
   const ts = req.headers.get("x-vaani-timestamp") ?? "";
   if (!sig || !/^\d+$/.test(ts)) throw new VaaniAuthError("missing signature or timestamp");
