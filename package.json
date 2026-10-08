@@ -11,8 +11,10 @@
     "check:gemini": "node --env-file=.env.local scripts/check-gemini.mjs",
     "check:vaani": "node --env-file=.env.local scripts/check-vaani.mjs",
     "typecheck": "tsc --noEmit",
-    "db:migrate": "node --env-file=.env.local scripts/migrate.ts",
-    "test": "vitest run"
+    "db:migrate": "tsx --env-file=.env.local scripts/migrate.ts",
+    "test": "vitest run",
+    "seed": "tsx --conditions=react-server --env-file=.env.local scripts/seed.ts",
+    "show": "tsx --conditions=react-server --env-file=.env.local scripts/show-calls.ts"
   },
   "dependencies": {
     "@google/genai": "^2.28.0",
@@ -32,6 +34,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.4.0",
     "tailwindcss": "^4",
+    "tsx": "^4.23.15",
     "typescript": "^5",
     "vitest": "^5.0.3"
   }

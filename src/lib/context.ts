@@ -18,9 +18,19 @@ export function contextFiles(): Record<ContextFile, string> {
   return cache;
 }
 
-/** All context files concatenated with headers, for the Gemini system prompt. */
-export function contextBundle(): string {
+/**
+ * All context files concatenated with headers, for the Gemini system prompt.
+ * stripCalibration removes the "Calibration set" table (expected answers for
+ * T01–T20) so seed results measure the rules, not a lookup of the answer key.
+ */
+export function contextBundle(opts: { stripCalibration?: boolean } = {}): string {
   return Object.entries(contextFiles())
-    .map(([name, body]) => `===== ${name} =====\n${body.trim()}`)
+    .map(([name, body]) => {
+      let text = body.trim();
+      if (opts.stripCalibration && name === "qualification_logic.md") {
+        text = text.replace(/\n## Calibration set[\s\S]*?(?=\n## |\s*$)/, "\n");
+      }
+      return `===== ${name} =====\n${text}`;
+    })
     .join("\n\n");
 }
