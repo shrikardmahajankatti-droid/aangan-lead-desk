@@ -72,7 +72,9 @@ export function designerEmail(c: EmailCall, booking: EmailBooking, o: { designer
     ],
     ["CONSULTATION", [booking ? `Booked: ${fmtDateTime(booking.slot_start)} (calendar invite sent)` : "Not booked yet – please call to schedule"]],
     [
-      `LEAD SCORE: ${c.score ?? "–"}/10 (${label}) · ${callback}`,
+      c.score === null
+        ? `LEAD SCORE: not scored (qualified by Nikhil's review) · ${callback}`
+        : `LEAD SCORE: ${c.score}/10 (${label}) · ${callback}`,
       (c.reasons ?? []).filter(has).length ? [`Why: ${(c.reasons ?? []).filter(has).join(" · ")}`] : [],
     ],
     ["WHAT THEY WANT", [wantLine, budgetLine].filter(has)],
@@ -93,6 +95,7 @@ export function designerEmail(c: EmailCall, booking: EmailBooking, o: { designer
   sections.push([null, [`Transcript + recording: ${link}`, "", "Aangan Lead Desk"]]);
 
   const kept = sections.filter(([h, lines]) => lines.length > 0 || (h !== null && h.startsWith("LEAD SCORE")));
+
   const text = kept.map(([h, lines]) => [h, ...lines].filter((l) => l !== null).join("\n")).join("\n\n");
   const html = wrapHtml(
     kept

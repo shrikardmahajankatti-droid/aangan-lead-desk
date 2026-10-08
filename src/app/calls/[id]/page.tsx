@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getCall } from "@/lib/dashboard";
 import { designerEmail, escalationEmail } from "@/lib/email";
+import { CallActions } from "./actions";
 import { fmtDateTime, fmtDuration, fmtInr } from "@/lib/format";
 import { ScoreBadge, StatusDot, TypeBadge, UrgentFlag, VerdictBadge } from "../../_components/badges";
 
@@ -71,6 +72,19 @@ async function CallDetail({ params }: { params: PageProps<"/calls/[id]">["params
           {c.external_id} · {c.source} · {fmtDateTime(c.started_at)} {c.after_hours ? "(after hours)" : "(business hours)"} · {fmtDuration(c.duration_s)}
         </span>
       </header>
+
+      <Card title="Actions">
+        <CallActions
+          id={c.id}
+          isLead={c.record_type === "lead"}
+          isEscalation={c.record_type === "escalation"}
+          hasTranscript={Boolean(c.transcript)}
+          verdict={c.verdict}
+          emailStatus={c.email_status}
+          hubspotStatus={c.hubspot_status}
+          qualifiedOrEscalation={c.verdict === "qualified" || c.record_type === "escalation"}
+        />
+      </Card>
 
       {c.merged_into && (
         <p className="rounded-md bg-stone-100 px-3 py-2 text-sm dark:bg-stone-800">

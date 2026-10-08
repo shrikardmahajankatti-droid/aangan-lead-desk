@@ -252,3 +252,55 @@ async function mergeDroppedIntoCallback(callId: string, record: CallRecord): Pro
     where id = ${callId}`;
   return callback.id;
 }
+
+/**
+ * Dashboard "Re-run Gemini": a fresh analysis is appended (history kept), then the
+ * call is re-routed. Deliveries already done stay done; nothing is sent twice.
+ */
+export async function rerunAnalysis(callId: string): Promise<ProcessOutcome> {
+  const [c] = (await sql()`
+    select id, external_id, header, started_at, duration_s, transcript, notes, record_type, raw_payload
+    from (select c.*, c.raw_payload->>'header' as header from calls c) c where id = ${callId}`) as {
+    id: string;
+    external_id: string;
+    header: string | null;
+    started_at: string | null;
+    duration_s: number | null;
+    transcript: string | null;
+    notes: string | null;
+    record_type: string | null;
+  }[];
+  if (!c) throw new Error("call not found");
+  if (!c.transcript || c.record_type === "missed_call" || c.record_type === "dropped_call")
+    return { call_id: callId, external_id: c.external_id, outcome: "duplicate", record_type: c.record_type, error: "No conversation to analyse" };
+  try {
+    const input = callUserPrompt({
+      id: c.external_id,
+      header: c.header,
+      started_at: c.started_at ? new Date(c.started_at).toISOString() : null,
+      duration_s: c.duration_s,
+      transcript: c.transcript,
+      notes: c.notes,
+    });
+    const recordType = c.record_type === "escalation" ? "escalation" : await analyseLead(callId, input);
+    if (recordType === "escalation") await analyseEscalation(callId, input, c.record_type === "escalation");
+    const verdict = await routeCall(callId);
+    await deliver(callId).catch((e) => console.error(`deliver ${callId}:`, (e as Error).message));
+    return { call_id: callId, external_id: c.external_id, outcome: "processed", record_type: recordType, verdict };
+  } catch (e) {
+    const message = (e as Error).message;
+    await sql()`update calls set analysis_status = 'error', analysis_error = ${message} where id = ${callId}`;
+    return { call_id: callId, external_id: c.external_id, outcome: "error", record_type: c.record_type, error: message };
+  }
+}
+
+/** Nikhil's human check. Overriding to qualified triggers the email and HubSpot (once). */
+export async function overrideVerdict(callId: string, newVerdict: "qualified" | "not_qualified" | "nurture" | "needs_info", note: string | null) {
+  const [c] = (await sql()`select verdict, record_type from call_overview where id = ${callId}`) as { verdict: string | null; record_type: string | null }[];
+  if (!c) throw new Error("call not found");
+  if (c.record_type !== "lead") throw new Error("Only leads have a verdict to override");
+  await sql()`insert into overrides (call_id, old_verdict, new_verdict, note) values (${callId}, ${c.verdict}, ${newVerdict}, ${note})`;
+  const verdict = await routeCall(callId);
+  const delivered = await deliver(callId);
+  return { verdict, delivered };
+}

@@ -106,9 +106,10 @@ export async function kpis(): Promise<Kpis> {
 
   const [spend] = (await sql()`
     select
-      coalesce(sum(gemini_cost_inr), 0)::float as gemini_inr,
-      coalesce(sum(tokens_in), 0)::int        as tokens_in,
-      coalesce(sum(tokens_out), 0)::int       as tokens_out,
+      -- post-call analyses (incl. re-runs and failed attempts) + mid-call qualify checks
+      (coalesce(sum(gemini_cost_inr), 0) + (select coalesce(sum(cost_inr), 0) from live_tool_calls))::float as gemini_inr,
+      (coalesce(sum(tokens_in), 0) + (select coalesce(sum(tokens_in), 0) from live_tool_calls))::int        as tokens_in,
+      (coalesce(sum(tokens_out), 0) + (select coalesce(sum(tokens_out), 0) from live_tool_calls))::int      as tokens_out,
       -- Vaani bills whole minutes per call; only real Vaani calls cost anything
       coalesce(sum(case when source = 'vaani' then ceil(coalesce(duration_s, 0) / 60.0) else 0 end), 0)::int as vaani_minutes
     from call_overview`) as Record<string, number>[];
