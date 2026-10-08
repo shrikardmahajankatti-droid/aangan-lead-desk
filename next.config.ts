@@ -3,6 +3,8 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   cacheComponents: true,
   partialPrefetching: true,
+  // pdf-parse (pdf.js) loads a worker file at runtime; keep it out of the bundle.
+  serverExternalPackages: ["pdf-parse", "pdfjs-dist", "@napi-rs/canvas"],
   // The rulebook markdown is read from disk at runtime by API routes and pages.
   outputFileTracingIncludes: {
     "/*": ["./context/**/*.md"],

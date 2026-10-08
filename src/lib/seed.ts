@@ -78,4 +78,37 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return out;
 }
 
+/** Stores the parsed upload (idempotent per file) and returns its id with per-enquiry status. */
+export async function saveUpload(data: Uint8Array) {
+  const p = await previewSeed(data);
+  const phone = p.split.enquiries.filter((e) => e.channel === "phone");
+  const [row] = (await sql()`
+    insert into seed_uploads (file_hash, total, phone, whatsapp, web_form, year, enquiries)
+    values (${p.file_hash}, ${p.counts.total}, ${p.counts.phone}, ${p.counts.whatsapp}, ${p.counts.web_form},
+      ${p.year}, ${JSON.stringify(p.split.enquiries)})
+    on conflict (file_hash) do update set enquiries = excluded.enquiries, year = excluded.year
+    returning id`) as { id: string }[];
+  const done = (await sql()`
+    select external_id from calls
+    where source = 'seed' and external_id = any(${phone.map((e) => e.id)})
+      and analysis_status in ('done', 'skipped')`) as { external_id: string }[];
+  const doneIds = new Set(done.map((d) => d.external_id));
+  return {
+    upload_id: row.id,
+    year: p.year,
+    counts: p.counts,
+    phone: phone.map((e) => ({ id: e.id, header: e.header, already_processed: doneIds.has(e.id) })),
+  };
+}
+
+/** Processes one phone enquiry from a stored upload. */
+export async function processUploadedEnquiry(uploadId: string, enquiryId: string): Promise<ProcessOutcome> {
+  const [row] = (await sql()`select enquiries from seed_uploads where id = ${uploadId}`) as { enquiries: SeedEnquiry[] }[];
+  if (!row) throw new Error("Upload not found");
+  const e = row.enquiries.find((x) => x.id === enquiryId);
+  if (!e) throw new Error(`Enquiry ${enquiryId} not in this upload`);
+  if (e.channel !== "phone") throw new Error(`${enquiryId} is ${e.channel}: out of scope (phone only)`);
+  return processCall(seedToRecord(e));
+}
+
 export type { ProcessOutcome };
