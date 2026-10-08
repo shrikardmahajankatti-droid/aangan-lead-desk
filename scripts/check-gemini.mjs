@@ -11,14 +11,21 @@ const wanted = process.env.GEMINI_MODEL || "gemini-3.8-flash";
 const fallback = "gemini-3.7-flash";
 const ai = new GoogleGenAI({ apiKey: key });
 
-const names = [];
-const pager = await ai.models.list({ config: { pageSize: 100 } });
-for await (const m of pager) names.push(m.name.replace(/^models\//, ""));
-const flash = names.filter((n) => n.includes("flash")).sort();
-console.log("Flash models visible to this key:\n  " + flash.join("\n  "));
+// Some keys (e.g. org-issued "AQ." keys) can call generateContent but not models.list.
+let names = null;
+try {
+  names = [];
+  const pager = await ai.models.list({ config: { pageSize: 100 } });
+  for await (const m of pager) names.push(m.name.replace(/^models\//, ""));
+  const flash = names.filter((n) => n.includes("flash")).sort();
+  console.log("Flash models visible to this key:\n  " + flash.join("\n  "));
+} catch (e) {
+  names = null;
+  console.log(`models.list not permitted for this key (${e.status ?? "error"}); testing models directly.`);
+}
 
 for (const model of [wanted, fallback]) {
-  if (!names.includes(model)) {
+  if (names && !names.includes(model)) {
     console.log(`✗ ${model}: not listed`);
     continue;
   }
