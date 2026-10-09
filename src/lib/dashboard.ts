@@ -117,8 +117,10 @@ export async function kpis(): Promise<Kpis> {
   const [actions] = (await sql()`
     select
       count(*) filter (where type in ('email', 'escalation') and status = 'success')::int as emails_sent,
-      count(*) filter (where type in ('email', 'escalation') and status = 'dry_run')::int as emails_dry_run
-    from actions`) as Record<string, number>[];
+      -- dry runs that were later sent for real aren't "pending" any more
+      count(*) filter (where type in ('email', 'escalation') and status = 'dry_run'
+        and not exists (select 1 from actions s where s.idempotency_key = a.idempotency_key and s.status = 'success'))::int as emails_dry_run
+    from actions a`) as Record<string, number>[];
 
   const [book] = (await sql()`
     select count(*) filter (where status = 'booked')::int as booked, count(*) filter (where status = 'dry_run')::int as dry_run

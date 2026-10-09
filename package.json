@@ -20,7 +20,8 @@
     "google:auth": "tsx --env-file=.env.local scripts/google-auth.ts",
     "calendar:check": "tsx --conditions=react-server --env-file=.env.local scripts/calendar-check.ts",
     "vaani:config": "tsx --conditions=react-server --env-file=.env.local scripts/vaani-setup.ts",
-    "calendar:test-book": "tsx --conditions=react-server --env-file=.env.local scripts/calendar-test-book.ts"
+    "calendar:test-book": "tsx --conditions=react-server --env-file=.env.local scripts/calendar-test-book.ts",
+    "send-email": "tsx --conditions=react-server --env-file=.env.local scripts/send-email.ts"
   },
   "dependencies": {
     "@google/genai": "^2.28.0",
