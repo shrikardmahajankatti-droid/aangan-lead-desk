@@ -62,11 +62,11 @@ describe("parseWebhook", () => {
     if (ev.kind !== "postprocessed") return;
     expect(ev.event).toMatchObject({ vaani_call_id: "in-2", duration_s: 55, status: "completed", recording_url: "https://api.vaanivoice.ai/api/stream/in-2" });
     expect(ev.event.transcript).toBe("Agent: Hello, Aangan Studio.\nCaller: Hi, I'm Ritu from Baner.\nCaller: 3BHK, full home.");
-    expect(ev.event.started_at).toBe(new Date(Date.parse("2026-10-09T05:00:55Z") - 55150.02).toISOString());
+    expect(ev.event.started_at).toBe(new Date(Date.parse("2026-10-09T05:00:55Z") - 55_000).toISOString());
   });
 
   it("treats a short call with one caller turn as dropped, and no transcript as missed", () => {
-    const short = parseWebhook(JSON.stringify({ event: "call_postprocessing", call_id: "c", data: { call_duration: 9000, transcript: "AGENT: Hello\nUSER: Hi, I wanted to —" } }));
+    const short = parseWebhook(JSON.stringify({ event: "call_postprocessing", call_id: "c", data: { call_duration: 9, transcript: "AGENT: Hello\nUSER: Hi, I wanted to —" } }));
     const none = parseWebhook(JSON.stringify({ event: "call_postprocessing", call_id: "d", data: { call_duration: 3000, transcript: "Transcript is not available for further evaluations." } }));
     expect(short.kind === "postprocessed" && short.event.status).toBe("dropped");
     expect(none.kind === "postprocessed" && none.event.status).toBe("missed");
@@ -87,4 +87,24 @@ it("parseToolRequest accepts top-level params, args, or a JSON string", () => {
   expect(parseToolRequest("qualify", '{"call_id":"c","arguments":"{\\"location\\":\\"Baner\\"}"}')).toEqual({
     tool: "qualify", vaani_call_id: "c", caller_number: null, args: { location: "Baner" },
   });
+});
+
+it("reads the real 'send all call details' payload (duration in seconds, timestamps, web caller)", () => {
+  const ev = parseWebhook(JSON.stringify({
+    event: "call_postprocessing", call_id: "webrtc-1", timestamp: "2026-10-09T07:34:23.281718+00:00", from: "web-user",
+    data: {
+      call_id: "webrtc-1", call_type: "webrtc_call", phone_number: "web-user", call_duration: 107.42,
+      call_started_at: "2026-10-09T07:31:17.602249+00:00", picked_up_at: "2026-10-09T07:31:17.018012+00:00",
+      call_ended_at: "2026-10-09T07:33:05.534752+00:00",
+      transcript: "AGENT: Hello\nUSER: I'm looking to design my two BHK.\nUSER: Near Koregaon Park.",
+    },
+  }));
+  expect(ev.kind).toBe("postprocessed");
+  if (ev.kind !== "postprocessed") return;
+  expect(ev.event.duration_s).toBe(109); // picked_up_at → call_ended_at
+  expect(ev.event.started_at).toBe("2026-10-09T07:31:17.602Z");
+  expect(ev.event.caller_number).toBeNull(); // "web-user" isn't a number
+  const phone = parseWebhook(JSON.stringify({ event: "call_postprocessing", call_id: "c", data: { phone_number: "+919800000001", call_duration: 60, transcript: "AGENT: hi\nUSER: a\nUSER: b" } }));
+  expect(phone.kind === "postprocessed" && phone.event.caller_number).toBe("+919800000001");
+  expect(phone.kind === "postprocessed" && phone.event.duration_s).toBe(60);
 });

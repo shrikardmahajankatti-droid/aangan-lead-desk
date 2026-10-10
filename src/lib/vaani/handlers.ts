@@ -108,10 +108,7 @@ export async function acceptCallEnded(e: CallEndedEvent, source: "vaani" | "simu
       if (!e.caller_number) {
         const [start] = (await sql()`
           select phone_number, received_at from vaani_call_starts where call_id = ${e.vaani_call_id}`) as { phone_number: string | null; received_at: string }[];
-        if (start) {
-          e.caller_number = start.phone_number;
-          e.started_at = new Date(start.received_at).toISOString(); // more accurate than end − duration
-        }
+        if (start) e.caller_number = start.phone_number;
       }
       return processCall(toCallRecord(e, source)); // links mid-call bookings before routing
     },

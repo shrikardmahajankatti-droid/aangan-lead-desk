@@ -41,8 +41,17 @@ function safeEqual(a: Buffer, b: Buffer) {
 export async function verifiedWebhookBody(req: Request, now = Date.now()): Promise<string> {
   const raw = await req.text();
   const secret = env("vaani").VAANI_WEBHOOK_SECRET;
+  try {
+    return checkWebhookSignature(req, raw, secret, now);
+  } catch (e) {
+    await recordRejection(req, "webhook", (e as Error).message, webhookDiagnostics(req, raw, secret));
+    throw e;
+  }
+}
+
+function checkWebhookSignature(req: Request, raw: string, secret: string, now: number): string {
   const hmac = (data: string) => createHmac("sha256", secret).update(data, "utf8").digest();
-  const hexOf = (v: string | null) => v?.match(/^sha256=([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null;
+  const hexOf = (v: string | null) => v?.trim().match(/^sha256=([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null;
 
   const agentSig = hexOf(req.headers.get("x-webhook-signature"));
   if (agentSig) {
@@ -58,11 +67,50 @@ export async function verifiedWebhookBody(req: Request, now = Date.now()): Promi
   return raw;
 }
 
-/** Mid-call tools: the dashboard sends a fixed header carrying the shared secret. */
+/** Which signing schemes would match a rejected webhook — booleans only, never values. */
+function webhookDiagnostics(req: Request, raw: string, secret: string) {
+  const sig = (req.headers.get("x-webhook-signature") ?? req.headers.get("x-vaani-signature") ?? "").trim();
+  const hex = sig.replace(/^sha256=/i, "").toLowerCase();
+  const mac = (d: string) => createHmac("sha256", secret).update(d, "utf8").digest("hex");
+  let compact = raw;
+  try {
+    compact = JSON.stringify(JSON.parse(raw));
+  } catch {}
+  return {
+    sigPrefix: sig.match(/^[a-z0-9]+=/i)?.[0] ?? null,
+    sigLen: hex.length,
+    bodyLen: raw.length,
+    matches: { body: mac(raw) === hex, compact_json: mac(compact) === hex, empty_body: mac("") === hex },
+  };
+}
+
+/** Records a rejected Vaani request (no secrets, no body). Never throws. */
+async function recordRejection(req: Request, route: string, reason: string, details: Record<string, unknown>) {
+  try {
+    const { sql } = await import("../db");
+    await sql()`
+      insert into rejected_requests (route, reason, event, header_names, details)
+      values (${`${route} ${new URL(req.url).pathname}`}, ${reason}, ${req.headers.get("x-webhook-event")},
+        ${[...req.headers.keys()].filter((k) => !k.startsWith("x-vercel") && !k.startsWith("x-forwarded"))}, ${JSON.stringify(details)})`;
+  } catch (e) {
+    console.error("could not record rejection:", (e as Error).message);
+  }
+}
+
+/** Mid-call tools: the dashboard sends a fixed header carrying the shared secret (whitespace from pasting is ignored). */
 export async function verifiedToolBody(req: Request): Promise<string> {
-  const given = req.headers.get(TOOL_SECRET_HEADER) ?? "";
+  const raw = req.headers.get(TOOL_SECRET_HEADER);
+  const given = (raw ?? "").trim();
   const secret = env("vaani").VAANI_WEBHOOK_SECRET;
-  if (!given || !safeEqual(Buffer.from(given), Buffer.from(secret))) throw new VaaniAuthError("bad tool secret");
+  if (!given || !safeEqual(Buffer.from(given), Buffer.from(secret))) {
+    await recordRejection(req, "tool", "bad tool secret", {
+      headerPresent: raw !== null,
+      givenLen: given.length,
+      expectedLen: secret.length,
+      hadWhitespace: raw !== null && raw !== given,
+    });
+    throw new VaaniAuthError("bad tool secret");
+  }
   return req.text();
 }
 
@@ -138,11 +186,26 @@ export function parseWebhook(raw: string, receivedAt = new Date()): WebhookEvent
     return { kind: "ended", delivery_id, call_id: callId, duration_s: num(d.call_duration), end_reason: str(d.end_reason), raw: p };
 
   if (event === "call_postprocessing") {
-    const durationMs = num(d.call_duration);
-    const duration_s = durationMs === null ? null : Math.round(durationMs / 1000);
     const t = normaliseTranscript(pick(d, "transcript", "transcription"));
-    const doneAt = new Date(str(p.timestamp) ?? receivedAt.toISOString());
-    const startedAt = new Date((Number.isNaN(doneAt.getTime()) ? receivedAt : doneAt).getTime() - (durationMs ?? 0));
+    // Timing: prefer the explicit timestamps "Send all call details" includes. call_duration is
+    // documented as ms but observed in seconds (107.42 for a 1m48s call), so only trust it as a
+    // fallback and read big values as ms.
+    const ts = (v: unknown) => {
+      const x = str(v) ? Date.parse(str(v)!) : NaN;
+      return Number.isNaN(x) ? null : x;
+    };
+    const answered = ts(pick(d, "picked_up_at", "call_started_at"));
+    const ended = ts(d.call_ended_at);
+    const rawDur = num(d.call_duration);
+    const duration_s =
+      answered !== null && ended !== null && ended >= answered
+        ? Math.round((ended - answered) / 1000)
+        : rawDur === null ? null : Math.round(rawDur > 10_000 ? rawDur / 1000 : rawDur);
+    const doneAt = ts(p.timestamp) ?? receivedAt.getTime();
+    const startedAt = new Date(ts(pick(d, "call_started_at", "picked_up_at", "call_dialing_at")) ?? doneAt - (duration_s ?? 0) * 1000);
+    // Browser test calls report "web-user" instead of a number.
+    const phone = str(pick(d, "phone_number", "from")) ?? str(p.from);
+    const callerNumber = phone && /\d{6,}/.test(phone) ? phone : null;
     // Inbound calls are answered by the agent, so "missed" means no conversation at all;
     // a caller who hung up before saying anything useful is a dropped call.
     const status: CallEndedEvent["status"] = !t.text ? "missed" : t.userTurns <= 1 && (duration_s ?? 0) < 25 ? "dropped" : "completed";
@@ -153,7 +216,7 @@ export function parseWebhook(raw: string, receivedAt = new Date()): WebhookEvent
         event_id: delivery_id,
         event_type: "call.completed",
         vaani_call_id: callId,
-        caller_number: null, // filled from the call_started event
+        caller_number: callerNumber, // else filled from the call_started event
         started_at: startedAt.toISOString(),
         duration_s,
         answer_delay_s: 0, // the agent answers inbound calls immediately
