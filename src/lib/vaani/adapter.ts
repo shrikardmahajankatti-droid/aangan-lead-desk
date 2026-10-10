@@ -33,6 +33,7 @@ function safeEqual(a: Buffer, b: Buffer) {
  * Webhooks. Two signing schemes are accepted, both keyed with VAANI_WEBHOOK_SECRET:
  *  - Agent webhooks (observed from the dashboard's Test Connectivity, not in the docs):
  *      X-Webhook-Signature: sha256=<hex HMAC-SHA256(secret, raw body)>, X-Webhook-Event: <event>
+ *      (call_started sends the same HMAC without the "sha256=" prefix)
  *    No timestamp header; retries and replays are made harmless by deduping on event + call id.
  *  - Campaign webhooks (documented): X-Vaani-Signature over "{timestamp}.{raw body}" with
  *    X-Vaani-Timestamp, rejected if older than 5 minutes.
@@ -51,7 +52,8 @@ export async function verifiedWebhookBody(req: Request, now = Date.now()): Promi
 
 function checkWebhookSignature(req: Request, raw: string, secret: string, now: number): string {
   const hmac = (data: string) => createHmac("sha256", secret).update(data, "utf8").digest();
-  const hexOf = (v: string | null) => v?.trim().match(/^sha256=([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null;
+  // "sha256=<hex>" on most events; call_started arrives as bare "<hex>" (observed).
+  const hexOf = (v: string | null) => v?.trim().match(/^(?:sha256=)?([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null;
 
   const agentSig = hexOf(req.headers.get("x-webhook-signature"));
   if (agentSig) {

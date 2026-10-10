@@ -17,6 +17,12 @@ describe("agent webhook signature (X-Webhook-Signature over the raw body)", () =
     await expect(verifiedWebhookBody(req(raw + " ", signAgentWebhook(raw, "whsec_test")))).rejects.toBeInstanceOf(VaaniAuthError);
     await expect(verifiedWebhookBody(req(raw, signAgentWebhook(raw, "other")))).rejects.toBeInstanceOf(VaaniAuthError);
   });
+  it("accepts call_started's bare-hex signature (no sha256= prefix)", async () => {
+    const body = '{"event":"call_started","room_name":"r9","phone_number":"+919800000001"}';
+    const bare = signAgentWebhook(body, "whsec_test", "call_started")["x-webhook-signature"].replace("sha256=", "");
+    expect(await verifiedWebhookBody(req(body, { "x-webhook-signature": bare }))).toBe(body);
+    await expect(verifiedWebhookBody(req(body + " ", { "x-webhook-signature": bare }))).rejects.toBeInstanceOf(VaaniAuthError);
+  });
   it("the test event is acknowledged and ignored", () => {
     expect(parseWebhook(raw).kind).toBe("ignore");
   });
